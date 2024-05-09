@@ -4,6 +4,8 @@
 """
 
 import os
+import ast
+import re
 
 from tqdm import tqdm
 
@@ -52,6 +54,47 @@ def to_four_space_indents(old_code):
     return new_code
 
 
+"""From https://github.com/evalplus/evalplus/issues/84"""
+def coding_humaneval_match_answer(task_data, response):
+    # Matching utilities
+    def _function_exists(code, func_name):
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == func_name:
+                return True
+
+        return False
+
+    def _try_match(content, prefix, entrypoint):
+        # All markdown code blocks, as well as raw
+        code_blocks = [m[1] for m in re.findall(r"(\`{3}.*?\n+)([\s\S]*?)(\n+\`{3})", content)] \
+                    + [content]
+
+        for block in code_blocks:
+            # Check syntax
+            try:
+                code_completion = prefix + block
+                if _function_exists(code_completion, entrypoint):
+                    return code_completion
+            except SyntaxError:
+                pass
+
+    # Try match with include prefix
+    humaneval_task = task_data
+    include_prefix = humaneval_task['prompt'].split('def')[0].strip() + "\n\n"
+
+    result = _try_match(response, include_prefix, humaneval_task["entry_point"])
+    if result: 
+        return True, {"task_id": humaneval_task["task_id"], "completion": result}
+
+    # If fail then match with function signature
+    result = _try_match(response, humaneval_task["prompt"], humaneval_task["entry_point"])
+    if result: 
+        return True, {"task_id": humaneval_task["task_id"], "completion": result}
+
+    return False, {"task_id": humaneval_task["task_id"], "completion": response}
+
+
 if __name__ == "__main__":
     import argparse
     import pathlib
@@ -59,9 +102,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--samples", type=str, required=True)
     parser.add_argument("--eofs", nargs="+", type=str, default=[])
+    parser.add_argument("--clean-chat-response", action="store_true")
     parser.add_argument("--inplace", action="store_true")
     parser.add_argument(
-        "--rm-prefix-lines", type=str, help="Remove lines starting with this"
+        "--rm-prefix-lines", type=str, help="Remove lines starting with this", nargs="+"
     )
     parser.add_argument(
         "--dataset", required=True, type=str, choices=["humaneval", "mbpp"]
@@ -95,6 +139,7 @@ if __name__ == "__main__":
 
     nsan = 0
     ntotal = 0
+    nmatched = 0
 
     new_solutions = []
 
@@ -113,8 +158,16 @@ if __name__ == "__main__":
 
         old_code = old_code.strip()
 
+        if args.clean_chat_response:
+            macthed, cleaned_output = coding_humaneval_match_answer(dataset[task_id], old_code)
+            _new_code = cleaned_output["completion"]
+            if macthed:
+                nmatched += 1
+        else:
+            _new_code = old_code
+
         new_code = sanitize(
-            old_code=old_code,
+            old_code=_new_code,
             entry_point=entry_point[task_id],
             rm_prefix_lines=args.rm_prefix_lines,
             eofs=args.eofs,
@@ -132,7 +185,11 @@ if __name__ == "__main__":
 
     if is_folder:
         write_directory(target_path, new_solutions)
+        write_jsonl(os.path.join(target_path, "samples-sanitized.jsonl"), new_solutions)
     else:
         write_jsonl(target_path, new_solutions)
+
+    if args.clean_chat_response:
+        print(f"Matched {nmatched} out of {ntotal} files.")
 
     print(f"Sanitized {nsan} out of {ntotal} files.")

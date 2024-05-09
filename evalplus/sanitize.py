@@ -57,16 +57,18 @@ def to_four_space_indents(old_code):
 def sanitize(
     old_code: str,
     entry_point: str,
-    rm_prefix_lines: Optional[str] = None,
+    rm_prefix_lines: Optional[str|list] = None,
     eofs: List = None,
 ):
     new_code = old_code
     if rm_prefix_lines is not None:
+        if isinstance(rm_prefix_lines, str):
+            rm_prefix_lines = [rm_prefix_lines]
         new_code = "\n".join(
             [
                 line
                 for line in old_code.splitlines()
-                if not line.startswith(rm_prefix_lines)
+                if not any([line.startswith(prefix) for prefix in rm_prefix_lines])
             ]
         )
 
